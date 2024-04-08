@@ -66,9 +66,55 @@ def go(arg):
     NUM_CLS = 1
 
     print(" Loading Data ...")
-    TEXT_emb = np.load(arg.input_dir)
-    LABEL_emb = np.load(arg.label_dir)
-    LABEL_emb_b = np.load(arg.label_dir_b)
+    TEXT_emb = np.load(arg.data_dir + arg.input_dir, allow_pickle=True)
+    TEXT_emb_dict = {key: TEXT_emb[key] for key in TEXT_emb}
+    # TODO stock priceとvolatilityのデータロード
+    price_data_path = arg.data_dir + arg.price_data_dir
+
+    vol_single_path = [
+        "train_split_SeriesSingleDayVol3.csv",
+        "val_split_SeriesSingleDayVol3.csv",
+        "test_split_SeriesSingleDayVol3.csv",
+    ]
+    vol_average_path = [
+        "train_split_Avg_Series_WITH_LOG.csv",
+        "val_split_Avg_Series_WITH_LOG.csv",
+        "test_split_Avg_Series_WITH_LOG.csv",
+    ]
+    price_path = [
+        "train_price_label.csv",
+        "dev_price_label.csv",
+        "test_price_label.csv",
+    ]
+
+    vol_single_list = []
+    vol_average_list = []
+    price_list = []
+    for vol_single, vol_average, price in zip(
+        vol_single_path, vol_average_path, price_path
+    ):
+        vol_single_list.append(pd.read_csv(price_data_path + vol_single))
+        vol_average_list.append(pd.read_csv(price_data_path + vol_average))
+        price_list.append(pd.read_csv(price_data_path + price))
+
+    vol_single_df = pd.concat(vol_single_list, axis=0)
+    vol_average_df = pd.concat(vol_average_list, axis=0)
+    price_df = pd.concat(price_list, axis=0)
+
+    # Multi-task on volatility average and volatility single <- 3 days
+    text_file_list = list(TEXT_emb_dict.keys())
+    vol_single_df = vol_single_df[vol_single_df["text_file_name"].isin(text_file_list)]
+    vol_average_df = vol_average_df[vol_average_df["text_file_name"].isin(text_file_list)]
+    price_df = price_df[price_df["text_file_name"].isin(text_file_list)]
+    
+    vol_single_df = vol_single_df[["text_file_name", f"future_Single_{arg.vol_duration}"]]
+    vol_average_df = vol_average_df[["text_file_name", f"future_{arg.vol_duration}"]]
+    
+    # TODO stock priceとtext_embのkeyが一致しているように確認
+    merged_data = pd.merge(vol_single_df, vol_average_df, on="text_file_name", how="inner")  
+    LABEL_emb = merged_data[f"future_{arg.vol_duration}"].values
+    LABEL_emb_b = merged_data[f"future_Single_{arg.vol_duration}"].values
+    TEXT_emb = np.stack([TEXT_emb_dict[i] for i in merged_data["text_file_name"].tolist()])
     print(" Finish Loading Data... ")
 
     if arg.final:
@@ -128,12 +174,12 @@ def go(arg):
     seen = 0
     evaluation = {
         "epoch": [],
-        "Train Accuracy": [],
-        "Test Accuracy": [],
-        "Test Accuracy B": [],
+        "Train Loss": [],
+        "Test Loss": [],
+        "Test Loss B": [],
         "Outputs": [],
     }
-    for e in tqdm.tqdm_notebook(range(arg.num_epochs)):
+    for e in tqdm.tqdm(range(arg.num_epochs)):
         train_loss_tol = 0.0
         print("\n epoch ", e)
         model.train(True)
@@ -209,12 +255,12 @@ def go(arg):
         #                 print('validation accuracy', acc)
         # torch.save(model, '/data/exp/checkpoints_torch_volatility/checkpoint-epoch'+str(e)+'.pth')
         evaluation["epoch"].append(e)
-        evaluation["Train Accuracy"].append(train_loss_tol.item())
-        evaluation["Test Accuracy"].append(acc.item())
-        evaluation["Test Accuracy B"].append(loss_test_b.item())
-        evaluation["Outputs"].append(out_a)
-
+        evaluation["Train Loss"].append(train_loss_tol.item())
+        evaluation["Test Loss"].append(acc.item())
+        evaluation["Test Loss B"].append(loss_test_b.item())
+        evaluation["Outputs"].append(out_a.cpu().detach().numpy().mean())
+        
     evaluation = pd.DataFrame(evaluation)
-    evaluation.sort_values(["Test Accuracy"], ascending=True, inplace=True)
+    evaluation.sort_values(["Test Loss"], ascending=True, inplace=True)
 
     return evaluation
