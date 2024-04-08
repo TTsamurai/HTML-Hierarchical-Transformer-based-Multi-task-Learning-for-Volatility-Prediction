@@ -217,6 +217,88 @@ class RTransformer(nn.Module):
         x_b = torch.squeeze(x_b)
         # print('x shape: ',x.shape)
         return x_a, x_b
+    
+
+class RTransformer_single_task(nn.Module):
+    """
+    Transformer for sequences Regression
+
+    """
+
+    def __init__(
+        self,
+        emb,
+        heads,
+        depth,
+        seq_length,
+        num_tokens,
+        num_classes,
+        max_pool=True,
+        dropout=0.0,
+    ):
+        """
+        emb: Embedding dimension
+        heads: nr. of attention heads
+        depth: Number of transformer blocks
+        seq_length: Expected maximum sequence length
+        num_tokens: Number of tokens (usually words) in the vocabulary
+        num_classes: Number of classes.
+        max_pool: If true, use global max pooling in the last layer. If false, use global
+                         average pooling.
+        """
+        super().__init__()
+
+        self.num_tokens, self.max_pool = num_tokens, max_pool
+
+        # self.token_embedding = nn.Embedding(embedding_dim=emb, num_embeddings=num_tokens)
+        self.pos_embedding = nn.Embedding(embedding_dim=emb, num_embeddings=seq_length)
+
+        tblocks = []
+        for i in range(depth):
+            tblocks.append(
+                TransformerBlock(
+                    emb=emb,
+                    heads=heads,
+                    seq_length=seq_length,
+                    mask=False,
+                    dropout=dropout,
+                )
+            )
+
+        self.tblocks = nn.Sequential(*tblocks)
+
+        self.toprobs = nn.Linear(emb, num_classes)
+        self.toprobs_b = nn.Linear(emb, num_classes)
+        self.do = nn.Dropout(dropout)
+
+    def forward(self, x):
+        """
+        :param x: A batch by sequence length integer tensor of token indices.
+        :return: predicted log-probability vectors for each token based on the preceding tokens.
+        """
+        sentences_emb = x
+        b, t, e = x.size()
+
+        positions = self.pos_embedding(torch.arange(t, device=d()))[None, :, :].expand(
+            b, t, e
+        )
+        # positions = self.pos_embedding(torch.arange(t))[None, :, :].expand(b, t, e)
+        # positions = torch.tensor(positions, dtype=torch.float32)
+        x = sentences_emb.cuda() + positions
+        x = self.do(x)
+
+        x = self.tblocks(x)
+
+        x = (
+            x.max(dim=1)[0] if self.max_pool else x.mean(dim=1)
+        )  # pool over the time dimension
+
+        x_a = self.toprobs(x)
+        # x_b = self.toprobs_b(x)
+        x_a = torch.squeeze(x_a)
+        # x_b = torch.squeeze(x_b)
+        # print('x shape: ',x.shape)
+        return x_a
 
 
 class CTransformer(nn.Module):
