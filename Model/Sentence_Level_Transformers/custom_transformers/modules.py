@@ -1,11 +1,18 @@
-from transformer import util
-from transformer.util import mask_
+import sys
+
+sys.path.append("../Sentence_Level_Transformers")
+# import ipdb
+
+# ipdb.set_trace()
+from custom_transformers import util
+from custom_transformers.util import mask_
 
 import torch
 from torch import nn
 import torch.nn.functional as F
 
 import random, math
+
 
 class SelfAttention(nn.Module):
     def __init__(self, emb, heads=8, mask=False):
@@ -33,9 +40,9 @@ class SelfAttention(nn.Module):
         b, t, e = x.size()
         h = self.heads
         assert e == self.emb
-        keys    = self.tokeys(x)   .view(b, t, h, e)
+        keys = self.tokeys(x).view(b, t, h, e)
         queries = self.toqueries(x).view(b, t, h, e)
-        values  = self.tovalues(x) .view(b, t, h, e)
+        values = self.tovalues(x).view(b, t, h, e)
 
         # compute scaled dot-product self-attention
 
@@ -44,23 +51,27 @@ class SelfAttention(nn.Module):
         queries = queries.transpose(1, 2).contiguous().view(b * h, t, e)
         values = values.transpose(1, 2).contiguous().view(b * h, t, e)
 
-        queries = queries / (e ** (1/4))
-        keys    = keys / (e ** (1/4))
+        queries = queries / (e ** (1 / 4))
+        keys = keys / (e ** (1 / 4))
         # - Instead of dividing the dot products by sqrt(e), we scale the keys and values.
         #   This should be more memory efficient
 
         # - get dot product of queries and keys, and scale
         dot = torch.bmm(queries, keys.transpose(1, 2))
 
-        assert dot.size() == (b*h, t, t)
-        if self.mask: # mask out the lower half of the dot matrix,including the diagonal
-            mask_(dot, maskval=float('-inf'), mask_diagonal=False)
+        assert dot.size() == (b * h, t, t)
+        if (
+            self.mask
+        ):  # mask out the lower half of the dot matrix,including the diagonal
+            mask_(dot, maskval=float("-inf"), mask_diagonal=False)
 
-        dot = F.softmax(dot, dim=2) # dot now has row-wise self-attention probabilities
+        dot = F.softmax(dot, dim=2)  # dot now has row-wise self-attention probabilities
 
-        assert not util.contains_nan(dot[:, 1:, :]) # only the forst row may contain nan
+        assert not util.contains_nan(
+            dot[:, 1:, :]
+        )  # only the forst row may contain nan
 
-        if self.mask == 'first':
+        if self.mask == "first":
             dot = dot.clone()
             dot[:, :1, :] = 0.0
             # - The first row of the first attention matrix is entirely masked out, so the softmax operation results
@@ -73,6 +84,7 @@ class SelfAttention(nn.Module):
         out = out.transpose(1, 2).contiguous().view(b, t, h * e)
 
         return self.unifyheads(out)
+
 
 class TransformerBlock(nn.Module):
     def __init__(self, emb, heads, mask, seq_length, ff_hidden_mult=4, dropout=0.0):
@@ -87,7 +99,7 @@ class TransformerBlock(nn.Module):
         self.ff = nn.Sequential(
             nn.Linear(emb, ff_hidden_mult * emb),
             nn.ReLU(),
-            nn.Linear(ff_hidden_mult * emb, emb)
+            nn.Linear(ff_hidden_mult * emb, emb),
         )
 
         self.do = nn.Dropout(dropout)
