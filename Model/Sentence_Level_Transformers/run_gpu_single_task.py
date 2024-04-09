@@ -100,26 +100,51 @@ def go(arg):
     # Multi-task on volatility average and volatility single <- 3 days
     text_file_list = list(TEXT_emb_dict.keys())
     vol_single_df = vol_single_df[vol_single_df["text_file_name"].isin(text_file_list)]
-    vol_average_df = vol_average_df[vol_average_df["text_file_name"].isin(text_file_list)]
-    price_df = price_df[price_df["text_file_name"].isin(text_file_list)][["text_file_name", f"future_{arg.duration}", f"future_label_{arg.duration}"]]
-    
+    vol_average_df = vol_average_df[
+        vol_average_df["text_file_name"].isin(text_file_list)
+    ]
+    price_df = price_df[price_df["text_file_name"].isin(text_file_list)][
+        [
+            "text_file_name",
+            f"future_{arg.duration}",
+            f"future_label_{arg.duration}",
+            "current_adjclose_price",
+        ]
+    ]
+
+    price_df[f"stock_return_{arg.duration}"] = (
+        price_df[f"future_{arg.duration}"] / price_df["current_adjclose_price"] - 1
+    )
     vol_single_df = vol_single_df[["text_file_name", f"future_Single_{arg.duration}"]]
     vol_average_df = vol_average_df[["text_file_name", f"future_{arg.duration}"]]
-    # TODO stock priceとtext_embのkeyが一致しているように確認    
+    # TODO stock priceとtext_embのkeyが一致しているように確認
     # タスクによりデータを変更する
     if arg.task == "stock_price_prediction":
-        merged_data = pd.merge(vol_single_df, price_df, on="text_file_name", how="inner")
+        merged_data = pd.merge(
+            vol_single_df, price_df, on="text_file_name", how="inner"
+        )
         LABEL_emb = price_df[f"future_{arg.duration}"].values
     elif arg.task == "stock_movement_prediction":
-        merged_data = pd.merge(vol_single_df, price_df, on="text_file_name", how="inner")
+        merged_data = pd.merge(
+            vol_single_df, price_df, on="text_file_name", how="inner"
+        )
         LABEL_emb = price_df[f"future_label_{arg.duration}"].values
     elif arg.task == "volatility_prediction":
-        merged_data = pd.merge(vol_single_df, vol_average_df, on="text_file_name", how="inner")  
+        merged_data = pd.merge(
+            vol_single_df, vol_average_df, on="text_file_name", how="inner"
+        )
         LABEL_emb = merged_data[f"future_{arg.duration}"].values
+    elif arg.task == "stock_return_prediction":
+        merged_data = pd.merge(
+            vol_single_df, price_df, on="text_file_name", how="inner"
+        )
+        LABEL_emb = price_df[f"stock_return_{arg.duration}"].values
     else:
         raise ValueError("task is not well defined")
     # LABEL_emb_b = merged_data[f"future_Single_{arg.duration}"].values
-    TEXT_emb = np.stack([TEXT_emb_dict[i] for i in merged_data["text_file_name"].tolist()])
+    TEXT_emb = np.stack(
+        [TEXT_emb_dict[i] for i in merged_data["text_file_name"].tolist()]
+    )
     print(" Finish Loading Data... ")
     if arg.final:
 
@@ -181,6 +206,7 @@ def go(arg):
         "Train Loss": [],
         "Test Loss": [],
         "Outputs": [],
+        "Actual": [],
     }
     for e in tqdm.tqdm(range(arg.num_epochs)):
         train_loss_tol = 0.0
@@ -208,7 +234,11 @@ def go(arg):
             out_a = model(inputs)
             # print(out_a.shape,out_b.shape)
             # print(out.shape,labels.shape)
-            if arg.task == "stock_price_prediction" or arg.task == "volatility_prediction":
+            if (
+                arg.task == "stock_price_prediction"
+                or arg.task == "volatility_prediction"
+                or arg.task == "stock_return_prediction"
+            ):
                 loss_function = nn.MSELoss()
             elif arg.task == "stock_movement_prediction":
                 loss_function = nn.BCEWithLogitsLoss()
@@ -246,8 +276,12 @@ def go(arg):
                 if inputs.size(1) > arg.max_length:
                     inputs = inputs[:, : arg.max_length, :]
                 out_a = model(inputs)
-                
-                if arg.task == "stock_price_prediction" or arg.task == "volatility_prediction":
+
+                if (
+                    arg.task == "stock_price_prediction"
+                    or arg.task == "volatility_prediction"
+                    or arg.task == "stock_return_prediction"
+                ):
                     loss_function = nn.MSELoss()
                 elif arg.task == "stock_movement_prediction":
                     loss_function = nn.BCEWithLogitsLoss()
@@ -268,8 +302,9 @@ def go(arg):
         evaluation["epoch"].append(e)
         evaluation["Train Loss"].append(train_loss_tol.item())
         evaluation["Test Loss"].append(acc.item())
-        evaluation["Outputs"].append(out_a.cpu().detach().numpy().mean())
-        
+        evaluation["Outputs"].append(out_a.cpu().detach().numpy().tolist())
+        evaluation["Actual"].append(labels.cpu().detach().numpy().tolist())
+
     evaluation = pd.DataFrame(evaluation)
     evaluation.sort_values(["Test Loss"], ascending=True, inplace=True)
 

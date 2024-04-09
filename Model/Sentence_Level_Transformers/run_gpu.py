@@ -104,17 +104,25 @@ def go(arg):
     # Multi-task on volatility average and volatility single <- 3 days
     text_file_list = list(TEXT_emb_dict.keys())
     vol_single_df = vol_single_df[vol_single_df["text_file_name"].isin(text_file_list)]
-    vol_average_df = vol_average_df[vol_average_df["text_file_name"].isin(text_file_list)]
+    vol_average_df = vol_average_df[
+        vol_average_df["text_file_name"].isin(text_file_list)
+    ]
     price_df = price_df[price_df["text_file_name"].isin(text_file_list)]
-    
-    vol_single_df = vol_single_df[["text_file_name", f"future_Single_{arg.vol_duration}"]]
+
+    vol_single_df = vol_single_df[
+        ["text_file_name", f"future_Single_{arg.vol_duration}"]
+    ]
     vol_average_df = vol_average_df[["text_file_name", f"future_{arg.vol_duration}"]]
-    
+
     # TODO stock priceとtext_embのkeyが一致しているように確認
-    merged_data = pd.merge(vol_single_df, vol_average_df, on="text_file_name", how="inner")  
+    merged_data = pd.merge(
+        vol_single_df, vol_average_df, on="text_file_name", how="inner"
+    )
     LABEL_emb = merged_data[f"future_{arg.vol_duration}"].values
     LABEL_emb_b = merged_data[f"future_Single_{arg.vol_duration}"].values
-    TEXT_emb = np.stack([TEXT_emb_dict[i] for i in merged_data["text_file_name"].tolist()])
+    TEXT_emb = np.stack(
+        [TEXT_emb_dict[i] for i in merged_data["text_file_name"].tolist()]
+    )
     print(" Finish Loading Data... ")
 
     if arg.final:
@@ -259,7 +267,7 @@ def go(arg):
         evaluation["Test Loss"].append(acc.item())
         evaluation["Test Loss B"].append(loss_test_b.item())
         evaluation["Outputs"].append(out_a.cpu().detach().numpy().mean())
-        
+
     evaluation = pd.DataFrame(evaluation)
     evaluation.sort_values(["Test Loss"], ascending=True, inplace=True)
 

@@ -3,7 +3,7 @@ import os
 
 sys.path.append("../../Model")
 import torch
-import random 
+import random
 import transformers
 from Sentence_Level_Transformers import run_gpu_single_task
 import numpy as np
@@ -17,29 +17,42 @@ def set_seed(seed):
     random.seed(seed)  # Python's built-in random module
     np.random.seed(seed)  # Numpy module
     torch.manual_seed(seed)  # PyTorch
-    if torch.cuda.is_available():  # If you're using PyTorch with a CUDA-capable device (GPU)
+    if (
+        torch.cuda.is_available()
+    ):  # If you're using PyTorch with a CUDA-capable device (GPU)
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)  # For multi-GPU setups
 
+
 FILE_TYPES = [
-            "TextSequence",
-            "ECT",
-            "gpt_summary",
-            "gpt_summary_overweight",
-            "gpt_summary_underweight",
-            "gpt_analysis_overweight",
-            "gpt_analysis_underweight",
-        ]
-DURATIONS = [3,7,15,30]
+    "TextSequence",
+    "ECT",
+    "gpt_summary",
+    "gpt_summary_overweight",
+    "gpt_summary_underweight",
+    "gpt_analysis_overweight",
+    "gpt_analysis_underweight",
+]
+DURATIONS = [3, 7, 15, 30]
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--task", type=str, default="stock_movement_prediction", choices=["stock_price_prediction", "stock_movement_prediction", "volatility_prediction"])
+    parser.add_argument(
+        "--task",
+        type=str,
+        default="stock_movement_prediction",
+        choices=[
+            "stock_price_prediction",
+            "stock_movement_prediction",
+            "volatility_prediction",
+            "stock_return_prediction",
+        ],
+    )
     args = parser.parse_known_args()[0]
     # Convert args to a mutable EasyDict
     args = easydict.EasyDict(vars(args))
     for file_type in FILE_TYPES:
         for dur in DURATIONS:
-            best_alpha = {"best": [], "seed": []}
+            best_alpha = {"best": [], "seed": [], "prediction": [], "actual": []}
             for seed in range(10):
                 args.update(
                     {
@@ -67,12 +80,14 @@ if __name__ == "__main__":
                         "vocab_size": None,
                         "cuda_id": "0",
                     }
-                )                
+                )
 
                 evaluation = run_gpu_single_task.go(easydict.EasyDict(args))
                 print(evaluation)
                 best_alpha["best"].append(evaluation["Test Loss"].iloc[0])
                 best_alpha["seed"].append(seed)
+                best_alpha["prediction"].append(evaluation["Outputs"].iloc[0])
+                best_alpha["actual"].append(evaluation["Actual"].iloc[0])
 
             best_alpha = pd.DataFrame(best_alpha)
             best_alpha.sort_values(["best"], ascending=True, inplace=True)
@@ -80,4 +95,3 @@ if __name__ == "__main__":
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
             best_alpha.to_csv(save_dir + f"result.csv")
-
