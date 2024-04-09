@@ -4,7 +4,6 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import ipdb
 
-# ipdb.set_trace()
 # Customized Transformers Util
 print(os.getcwd())
 
@@ -98,23 +97,30 @@ def go(arg):
     vol_single_df = pd.concat(vol_single_list, axis=0)
     vol_average_df = pd.concat(vol_average_list, axis=0)
     price_df = pd.concat(price_list, axis=0)
-
     # Multi-task on volatility average and volatility single <- 3 days
     text_file_list = list(TEXT_emb_dict.keys())
     vol_single_df = vol_single_df[vol_single_df["text_file_name"].isin(text_file_list)]
     vol_average_df = vol_average_df[vol_average_df["text_file_name"].isin(text_file_list)]
-    price_df = price_df[price_df["text_file_name"].isin(text_file_list)]
+    price_df = price_df[price_df["text_file_name"].isin(text_file_list)][["text_file_name", f"future_{arg.duration}", f"future_label_{arg.duration}"]]
     
-    vol_single_df = vol_single_df[["text_file_name", f"future_Single_{arg.vol_duration}"]]
-    vol_average_df = vol_average_df[["text_file_name", f"future_{arg.vol_duration}"]]
-    
-    # TODO stock priceとtext_embのkeyが一致しているように確認
-    merged_data = pd.merge(vol_single_df, vol_average_df, on="text_file_name", how="inner")  
-    LABEL_emb = merged_data[f"future_{arg.vol_duration}"].values
-    # LABEL_emb_b = merged_data[f"future_Single_{arg.vol_duration}"].values
+    vol_single_df = vol_single_df[["text_file_name", f"future_Single_{arg.duration}"]]
+    vol_average_df = vol_average_df[["text_file_name", f"future_{arg.duration}"]]
+    # TODO stock priceとtext_embのkeyが一致しているように確認    
+    # タスクによりデータを変更する
+    if arg.task == "stock_price_prediction":
+        merged_data = pd.merge(vol_single_df, price_df, on="text_file_name", how="inner")
+        LABEL_emb = price_df[f"future_{arg.duration}"].values
+    elif arg.task == "stock_movement_prediction":
+        merged_data = pd.merge(vol_single_df, price_df, on="text_file_name", how="inner")
+        LABEL_emb = price_df[f"future_label_{arg.duration}"].values
+    elif arg.task == "volatility_prediction":
+        merged_data = pd.merge(vol_single_df, vol_average_df, on="text_file_name", how="inner")  
+        LABEL_emb = merged_data[f"future_{arg.duration}"].values
+    else:
+        raise ValueError("task is not well defined")
+    # LABEL_emb_b = merged_data[f"future_Single_{arg.duration}"].values
     TEXT_emb = np.stack([TEXT_emb_dict[i] for i in merged_data["text_file_name"].tolist()])
     print(" Finish Loading Data... ")
-
     if arg.final:
 
         train, test = train_test_split(TEXT_emb, test_size=0.2)
@@ -202,8 +208,13 @@ def go(arg):
             out_a = model(inputs)
             # print(out_a.shape,out_b.shape)
             # print(out.shape,labels.shape)
-
-            loss = F.mse_loss(out_a, labels)
+            if arg.task == "stock_price_prediction" or arg.task == "volatility_prediction":
+                loss_function = nn.MSELoss()
+            elif arg.task == "stock_movement_prediction":
+                loss_function = nn.BCEWithLogitsLoss()
+            else:
+                raise ValueError("task is not well defined")
+            loss = loss_function(out_a, labels)
             train_loss_tol += loss
 
             loss.backward()
@@ -235,8 +246,16 @@ def go(arg):
                 if inputs.size(1) > arg.max_length:
                     inputs = inputs[:, : arg.max_length, :]
                 out_a = model(inputs)
+                
+                if arg.task == "stock_price_prediction" or arg.task == "volatility_prediction":
+                    loss_function = nn.MSELoss()
+                elif arg.task == "stock_movement_prediction":
+                    loss_function = nn.BCEWithLogitsLoss()
+                else:
+                    raise ValueError("task is not well defined")
 
-                loss_test += F.mse_loss(out_a, labels)
+                loss = loss_function(out_a, labels)
+                loss_test += loss
                 # tot = float(inputs.size(0))
                 # cor += float(labels.sum().item())
 
