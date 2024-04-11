@@ -32,6 +32,67 @@ import numpy as np
 from sklearn.metrics import mean_squared_error
 import random, tqdm, sys, math, gzip
 
+SEED_SPLIT = 42
+GPT_FILE_TYPES = [
+    "gpt_summary",
+    "gpt_summary_overweight",
+    "gpt_summary_underweight",
+    "gpt_analysis_overweight",
+    "gpt_analysis_underweight",
+    "gpt_promotion_overweight",
+    "gpt_promotion_underweight",
+    "analysis_underweight_and_overweight",
+    "summary_underweight_and_overweight",
+    "analysis_and_summary_underweight_and_overweight",
+]
+
+
+def get_text_embeddings_dict(file_path):
+    text_embs = np.load(file_path, allow_pickle=True)
+    return {key: text_embs[key] for key in text_embs}
+
+
+def stack_text_embeddings(text_emb_dict, text_file_list):
+    return np.stack([text_emb_dict[i] for i in text_file_list])
+
+
+def test_evaluate(arg, model, testloader):
+    loss_test = 0.0
+    for i, data in enumerate(testloader):
+        inputs, labels = data
+        inputs, labels = (
+            torch.tensor(inputs, dtype=torch.float32),
+            torch.tensor(labels, dtype=torch.float32).cuda(),
+        )
+        if inputs.size(1) > arg.max_length:
+            inputs = inputs[:, : arg.max_length, :]
+        out_a = model(inputs)
+
+        if (
+            arg.task == "stock_price_prediction"
+            or arg.task == "volatility_prediction"
+            or arg.task == "stock_return_prediction"
+        ):
+            loss_function = nn.MSELoss()
+        elif arg.task == "stock_movement_prediction":
+            loss_function = nn.BCEWithLogitsLoss()
+        else:
+            raise ValueError("task is not well defined")
+
+        loss = loss_function(out_a, labels)
+        loss_test += loss
+    acc = loss_test
+    return acc, out_a, labels
+
+
+def update_evaluation(evaluation, e, train_loss_tol, acc, out_a, labels):
+    evaluation["epoch"].append(e)
+    evaluation["Train Loss"].append(train_loss_tol.item())
+    evaluation["Test Loss"].append(acc.item())
+    evaluation["Outputs"].append(out_a.cpu().detach().numpy().tolist())
+    evaluation["Actual"].append(labels.cpu().detach().numpy().tolist())
+    return evaluation
+
 
 class Dataset_single_task(VanillaDataset):
     def __init__(self, texts, labels):
@@ -63,9 +124,11 @@ def go(arg):
     NUM_CLS = 1
 
     print(" Loading Data ...")
-    TEXT_emb = np.load(arg.data_dir + arg.input_dir, allow_pickle=True)
-    TEXT_emb_dict = {key: TEXT_emb[key] for key in TEXT_emb}
-    # TODO stock priceとvolatilityのデータロード
+    # Text Embeddings Load
+    text_file_path = arg.data_dir + arg.input_dir
+    TEXT_emb_dict = get_text_embeddings_dict(text_file_path)
+
+    # Price Data Load
     price_data_path = arg.data_dir + arg.price_data_dir
 
     vol_single_path = [
@@ -97,7 +160,7 @@ def go(arg):
     vol_single_df = pd.concat(vol_single_list, axis=0)
     vol_average_df = pd.concat(vol_average_list, axis=0)
     price_df = pd.concat(price_list, axis=0)
-    # Multi-task on volatility average and volatility single <- 3 days
+
     text_file_list = list(TEXT_emb_dict.keys())
     vol_single_df = vol_single_df[vol_single_df["text_file_name"].isin(text_file_list)]
     vol_average_df = vol_average_df[
@@ -117,7 +180,7 @@ def go(arg):
     )
     vol_single_df = vol_single_df[["text_file_name", f"future_Single_{arg.duration}"]]
     vol_average_df = vol_average_df[["text_file_name", f"future_{arg.duration}"]]
-    # TODO stock priceとtext_embのkeyが一致しているように確認
+    # Merging Text embeddigns and price data
     # タスクによりデータを変更する
     if arg.task == "stock_price_prediction":
         merged_data = pd.merge(
@@ -141,32 +204,59 @@ def go(arg):
         LABEL_emb = price_df[f"stock_return_{arg.duration}"].values
     else:
         raise ValueError("task is not well defined")
-    # LABEL_emb_b = merged_data[f"future_Single_{arg.duration}"].values
-    TEXT_emb = np.stack(
-        [TEXT_emb_dict[i] for i in merged_data["text_file_name"].tolist()]
-    )
+    merged_text_file_list = merged_data["text_file_name"].tolist()
+    TEXT_emb = stack_text_embeddings(TEXT_emb_dict, merged_text_file_list)
     print(" Finish Loading Data... ")
     if arg.final:
-
-        train, test = train_test_split(TEXT_emb, test_size=0.2)
-        train_label, test_label = train_test_split(LABEL_emb, test_size=0.2)
+        train, test = train_test_split(TEXT_emb, test_size=0.2, random_state=SEED_SPLIT)
+        train_label, test_label = train_test_split(
+            LABEL_emb, test_size=0.2, random_state=SEED_SPLIT
+        )
         # train_label_b, test_label_b = train_test_split(LABEL_emb_b, test_size=0.2)
 
         training_set = Dataset_single_task(train, train_label)
         val_set = Dataset_single_task(test, test_label)
-
     else:
-        data, _ = train_test_split(TEXT_emb, test_size=0.2)
-        train, val = train_test_split(data, test_size=0.125)
+        data, _ = train_test_split(TEXT_emb, test_size=0.2, random_state=SEED_SPLIT)
+        train, val = train_test_split(data, test_size=0.125, random_state=SEED_SPLIT)
 
-        data_label, _ = train_test_split(LABEL_emb, test_size=0.2)
-        train_label, val_label = train_test_split(data_label, test_size=0.125)
+        data_label, _ = train_test_split(
+            LABEL_emb, test_size=0.2, random_state=SEED_SPLIT
+        )
+        train_label, val_label = train_test_split(
+            data_label, test_size=0.125, random_state=SEED_SPLIT
+        )
 
         # data_label_b, _ = train_test_split(LABEL_emb_b, test_size=0.2)
         # train_label_b, val_label_b = train_test_split(data_label_b, test_size=0.125)
 
         training_set = Dataset_single_task(train, train_label)
         val_set = Dataset_single_task(val, val_label)
+
+    if arg.train_normal_test_various:
+        assert arg.file_name == "TextSequence", "TextSequence only"
+        assert arg.final == False, "Not Final"
+        various_test_set = {}
+        for stance_file in GPT_FILE_TYPES:
+            stance_input_dir = (
+                f"./ptm_embeddings/{arg.embeddings_type}/{stance_file}.npz"
+            )
+            text_file_path = arg.data_dir + stance_input_dir
+            TEXT_emb_dict = get_text_embeddings_dict(text_file_path)
+            TEXT_emb = stack_text_embeddings(TEXT_emb_dict, merged_text_file_list)
+
+            data, _ = train_test_split(TEXT_emb, test_size=0.2, random_state=SEED_SPLIT)
+            train, val = train_test_split(
+                data, test_size=0.125, random_state=SEED_SPLIT
+            )
+            various_dataset = Dataset_single_task(val, val_label)
+            various_dataloader = torch.utils.data.DataLoader(
+                various_dataset,
+                batch_size=len(various_dataset),
+                shuffle=False,
+                num_workers=2,
+            )
+            various_test_set[stance_file] = various_dataloader
 
     trainloader = torch.utils.data.DataLoader(
         training_set, batch_size=arg.batch_size, shuffle=False, num_workers=2
@@ -208,6 +298,16 @@ def go(arg):
         "Outputs": [],
         "Actual": [],
     }
+    evaluation_various = {
+        stance_file: {
+            "epoch": [],
+            "Train Loss": [],
+            "Test Loss": [],
+            "Outputs": [],
+            "Actual": [],
+        }
+        for stance_file in GPT_FILE_TYPES
+    }
     for e in tqdm.tqdm(range(arg.num_epochs)):
         train_loss_tol = 0.0
         print("\n epoch ", e)
@@ -226,8 +326,7 @@ def go(arg):
             inputs, labels = data
             inputs = Variable(inputs.type(torch.FloatTensor))
             labels = torch.tensor(labels, dtype=torch.float32).cuda()
-            # if i ==0:
-            # print (inputs.shape)
+
             if inputs.size(1) > arg.max_length:
                 inputs = inputs[:, : arg.max_length, :]
 
@@ -257,55 +356,42 @@ def go(arg):
             opt.step()
 
             seen += inputs.size(0)
-            # tbw.add_scalar('classification/train-loss', float(loss.item()), seen)
-        # print('train_loss: ',train_loss_tol)
         train_loss_tol = train_loss_tol / (i + 1)
         with torch.no_grad():
 
             model.train(False)
-            tot, cor = 0.0, 0.0
-
-            loss_test = 0.0
-            loss_test_b = 0.0
-            for i, data in enumerate(testloader):
-                inputs, labels = data
-                inputs, labels = (
-                    torch.tensor(inputs, dtype=torch.float32),
-                    torch.tensor(labels, dtype=torch.float32).cuda(),
-                )
-                if inputs.size(1) > arg.max_length:
-                    inputs = inputs[:, : arg.max_length, :]
-                out_a = model(inputs)
-
-                if (
-                    arg.task == "stock_price_prediction"
-                    or arg.task == "volatility_prediction"
-                    or arg.task == "stock_return_prediction"
-                ):
-                    loss_function = nn.MSELoss()
-                elif arg.task == "stock_movement_prediction":
-                    loss_function = nn.BCEWithLogitsLoss()
-                else:
-                    raise ValueError("task is not well defined")
-
-                loss = loss_function(out_a, labels)
-                loss_test += loss
-                # tot = float(inputs.size(0))
-                # cor += float(labels.sum().item())
-
-            acc = loss_test
-        #             if arg.final:
-        #                 print('test accuracy', acc)
-        #             else:
-        #                 print('validation accuracy', acc)
-        # torch.save(model, '/data/exp/checkpoints_torch_volatility/checkpoint-epoch'+str(e)+'.pth')
-        evaluation["epoch"].append(e)
-        evaluation["Train Loss"].append(train_loss_tol.item())
-        evaluation["Test Loss"].append(acc.item())
-        evaluation["Outputs"].append(out_a.cpu().detach().numpy().tolist())
-        evaluation["Actual"].append(labels.cpu().detach().numpy().tolist())
-
+            acc, out_a, labels = test_evaluate(arg, model, testloader)
+            if arg.train_normal_test_various:
+                for stance_file in GPT_FILE_TYPES:
+                    acc_var, out_a_var, labels_var = test_evaluate(
+                        arg, model, various_test_set[stance_file]
+                    )
+                    evaluation_various[stance_file] = update_evaluation(
+                        evaluation=evaluation_various[stance_file],
+                        e=e,
+                        train_loss_tol=train_loss_tol,
+                        acc=acc_var,
+                        out_a=out_a_var,
+                        labels=labels_var,
+                    )
+            evaluation = update_evaluation(
+                evaluation=evaluation,
+                e=e,
+                train_loss_tol=train_loss_tol,
+                acc=acc,
+                out_a=out_a,
+                labels=labels,
+            )
     evaluation = pd.DataFrame(evaluation)
     evaluation.sort_values(["Test Loss"], ascending=True, inplace=True)
+    if arg.train_normal_test_various:
+        for stance_file in GPT_FILE_TYPES:
+            evaluation_various[stance_file] = pd.DataFrame(
+                evaluation_various[stance_file]
+            )
+            evaluation_various[stance_file].sort_values(
+                ["Test Loss"], ascending=True, inplace=True
+            )
+        return evaluation, evaluation_various
 
     return evaluation
