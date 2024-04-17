@@ -26,14 +26,14 @@ def set_seed(seed):
 
 FILE_TYPES = [
     "TextSequence",
-    # "ECT",
-    # "gpt_summary",
-    # "gpt_summary_overweight",
-    # "gpt_summary_underweight",
-    # "gpt_analysis_overweight",
-    # "gpt_analysis_underweight",
-    # "gpt_promotion_overweight",
-    # "gpt_promotion_underweight",
+    "ECT",
+    "gpt_summary",
+    "gpt_summary_overweight",
+    "gpt_summary_underweight",
+    "gpt_analysis_overweight",
+    "gpt_analysis_underweight",
+    "gpt_promotion_overweight",
+    "gpt_promotion_underweight",
     "analysis_underweight_and_overweight",
     "summary_underweight_and_overweight",
     "analysis_and_summary_underweight_and_overweight",
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     # Convert args to a mutable EasyDict
     args = easydict.EasyDict(vars(args))
     # for train_normal_test_various in [False, True]:
-    for train_normal_test_various in [False, True]:
+    for train_normal_test_various in [True, False]:
         for file_type in FILE_TYPES:
             # testデータだけ変更するとき
             if train_normal_test_various:
@@ -95,7 +95,7 @@ if __name__ == "__main__":
                         }
                         for other_file in GPT_FILE_TYPES
                     }
-                    for seed in range(2):
+                    for seed in range(10):
                         args.update(
                             {
                                 "num_epochs": 5,

@@ -46,6 +46,22 @@ GPT_FILE_TYPES = [
     "analysis_and_summary_underweight_and_overweight",
 ]
 
+VOL_SINGLE_PATH = [
+    "train_split_SeriesSingleDayVol3.csv",
+    "val_split_SeriesSingleDayVol3.csv",
+    "test_split_SeriesSingleDayVol3.csv",
+]
+VOL_AVERAGE_PATH = [
+    "train_split_Avg_Series_WITH_LOG.csv",
+    "val_split_Avg_Series_WITH_LOG.csv",
+    "test_split_Avg_Series_WITH_LOG.csv",
+]
+PRICE_PATH = [
+    "train_price_label.csv",
+    "dev_price_label.csv",
+    "test_price_label.csv",
+]
+
 
 def get_text_embeddings_dict(file_path):
     text_embs = np.load(file_path, allow_pickle=True)
@@ -63,6 +79,62 @@ def get_text_path_label_prediction(text_file, labels, preds):
             "label": labels,
             "prediction": preds,
         }
+    )
+
+
+def load_and_concatenate_csv(file_names, base_path):
+    dataframes = [
+        pd.read_csv(os.path.join(base_path, file_name)) for file_name in file_names
+    ]
+    return pd.concat(dataframes, axis=0)
+
+
+def calculate_stock_return(df, duration):
+    """Calculates stock return and appends it as a new column."""
+    return_col = f"stock_return_{duration}"
+    future_col = f"future_{duration}"
+    df[return_col] = (df[future_col] / df["current_adjclose_price"]) - 1
+    return df
+
+
+def create_datasets(features, labels, file_list, indices):
+    """Extract subsets of data based on provided indices."""
+    return features[indices], labels[indices], [file_list[i] for i in indices]
+
+
+def split_data(indices, test_size, random_state):
+    """Helper function to split data based on indices."""
+    return train_test_split(indices, test_size=test_size, random_state=random_state)
+
+
+def main_splitting(TEXT_emb, LABEL_emb, merged_text_file_list, SEED_SPLIT):
+    all_indices = range(
+        len(TEXT_emb)
+    )  # Assuming all arrays are aligned and of the same length
+
+    # Split indices into training + test and then train into train + validation
+    train_val_indices, test_indices = split_data(
+        all_indices, test_size=0.2, random_state=SEED_SPLIT
+    )
+    train_indices, val_indices = split_data(
+        train_val_indices, test_size=0.125, random_state=SEED_SPLIT
+    )
+
+    # Use these indices to create datasets
+    train_features, train_labels, train_file_list = create_datasets(
+        TEXT_emb, LABEL_emb, merged_text_file_list, train_indices
+    )
+    val_features, val_labels, val_file_list = create_datasets(
+        TEXT_emb, LABEL_emb, merged_text_file_list, val_indices
+    )
+    test_features, test_labels, test_file_list = create_datasets(
+        TEXT_emb, LABEL_emb, merged_text_file_list, test_indices
+    )
+
+    return (
+        (train_features, train_labels, train_file_list),
+        (val_features, val_labels, val_file_list),
+        (test_features, test_labels, test_file_list),
     )
 
 
@@ -149,41 +221,17 @@ def go(arg):
 
     print(" Loading Data ...")
     # Text Embeddings Load
-    text_file_path = arg.data_dir + arg.input_dir
+    text_file_path = os.path.join(arg.data_dir, arg.input_dir)
     TEXT_emb_dict = get_text_embeddings_dict(text_file_path)
     # Price Data Load
-    price_data_path = arg.data_dir + arg.price_data_dir
+    price_data_path = os.path.join(arg.data_dir, arg.price_data_dir)
 
-    vol_single_path = [
-        "train_split_SeriesSingleDayVol3.csv",
-        "val_split_SeriesSingleDayVol3.csv",
-        "test_split_SeriesSingleDayVol3.csv",
-    ]
-    vol_average_path = [
-        "train_split_Avg_Series_WITH_LOG.csv",
-        "val_split_Avg_Series_WITH_LOG.csv",
-        "test_split_Avg_Series_WITH_LOG.csv",
-    ]
-    price_path = [
-        "train_price_label.csv",
-        "dev_price_label.csv",
-        "test_price_label.csv",
-    ]
+    # Load and concatenate CSV files
+    vol_single_df = load_and_concatenate_csv(VOL_SINGLE_PATH, price_data_path)
+    vol_average_df = load_and_concatenate_csv(VOL_AVERAGE_PATH, price_data_path)
+    price_df = load_and_concatenate_csv(PRICE_PATH, price_data_path)
 
-    vol_single_list = []
-    vol_average_list = []
-    price_list = []
-    for vol_single, vol_average, price in zip(
-        vol_single_path, vol_average_path, price_path
-    ):
-        vol_single_list.append(pd.read_csv(price_data_path + vol_single))
-        vol_average_list.append(pd.read_csv(price_data_path + vol_average))
-        price_list.append(pd.read_csv(price_data_path + price))
-
-    vol_single_df = pd.concat(vol_single_list, axis=0)
-    vol_average_df = pd.concat(vol_average_list, axis=0)
-    price_df = pd.concat(price_list, axis=0)
-
+    # Filter and select only necessary columns
     text_file_list = list(TEXT_emb_dict.keys())
     vol_single_df = vol_single_df[vol_single_df["text_file_name"].isin(text_file_list)]
     vol_average_df = vol_average_df[
@@ -197,12 +245,11 @@ def go(arg):
             "current_adjclose_price",
         ]
     ]
-
-    price_df[f"stock_return_{arg.duration}"] = (
-        price_df[f"future_{arg.duration}"] / price_df["current_adjclose_price"] - 1
-    )
     vol_single_df = vol_single_df[["text_file_name", f"future_Single_{arg.duration}"]]
     vol_average_df = vol_average_df[["text_file_name", f"future_{arg.duration}"]]
+    # Return Calculation
+    price_df = calculate_stock_return(price_df, arg.duration)
+
     # Merging Text embeddigns and price data
     # タスクによりデータを変更する
     if arg.task == "stock_price_prediction":
@@ -227,6 +274,8 @@ def go(arg):
         LABEL_emb = merged_data[f"stock_return_{arg.duration}"].values
     else:
         raise ValueError("task is not well defined")
+
+    # Prepare text emb
     merged_text_file_list = merged_data["text_file_name"].tolist()
     TEXT_emb = stack_text_embeddings(TEXT_emb_dict, merged_text_file_list)
     print(" Finish Loading Data... ")
@@ -241,25 +290,11 @@ def go(arg):
         training_set = Dataset_single_task(train, train_label)
         val_set = Dataset_single_task(test, test_label)
     else:
-        data, _ = train_test_split(TEXT_emb, test_size=0.2, random_state=SEED_SPLIT)
-        train, val = train_test_split(data, test_size=0.125, random_state=SEED_SPLIT)
-
-        data_label, _ = train_test_split(
-            LABEL_emb, test_size=0.2, random_state=SEED_SPLIT
+        train_data, val_data, _ = main_splitting(
+            TEXT_emb, LABEL_emb, merged_text_file_list, SEED_SPLIT
         )
-        train_label, val_label = train_test_split(
-            data_label, test_size=0.125, random_state=SEED_SPLIT
-        )
-
-        text_file_train, _ = train_test_split(
-            merged_text_file_list, test_size=0.2, random_state=SEED_SPLIT
-        )
-        text_file_train_label, text_file_val_label = train_test_split(
-            text_file_train, test_size=0.125, random_state=SEED_SPLIT
-        )
-
-        # data_label_b, _ = train_test_split(LABEL_emb_b, test_size=0.2)
-        # train_label_b, val_label_b = train_test_split(data_label_b, test_size=0.125)
+        train, train_label, text_file_train_label = train_data
+        val, val_label, text_file_val_label = val_data
 
         training_set = Dataset_single_task(train, train_label, text_file_train_label)
         val_set = Dataset_single_task(val, val_label, text_file_val_label)
@@ -274,14 +309,16 @@ def go(arg):
             )
             text_file_path = arg.data_dir + stance_input_dir
             TEXT_emb_dict = get_text_embeddings_dict(text_file_path)
-            TEXT_emb = stack_text_embeddings(TEXT_emb_dict, merged_text_file_list)
+            TEXT_emb_var = stack_text_embeddings(TEXT_emb_dict, merged_text_file_list)
 
-            data, _ = train_test_split(TEXT_emb, test_size=0.2, random_state=SEED_SPLIT)
-            train, val = train_test_split(
-                data, test_size=0.125, random_state=SEED_SPLIT
+            _, val_data_var, _ = main_splitting(
+                TEXT_emb_var, LABEL_emb, merged_text_file_list, SEED_SPLIT
             )
-
-            various_dataset = Dataset_single_task(val, val_label, text_file_val_label)
+            val_var, val_label_var, text_file_val_label_var = val_data_var
+            assert text_file_val_label == text_file_val_label_var, "Text File Mismatch"
+            various_dataset = Dataset_single_task(
+                val_var, val_label_var, text_file_val_label_var
+            )
             various_dataloader = torch.utils.data.DataLoader(
                 various_dataset,
                 batch_size=len(various_dataset),
@@ -399,9 +436,12 @@ def go(arg):
             )
             if arg.train_normal_test_various:
                 for stance_file in GPT_FILE_TYPES:
-                    acc_var, out_a_var, labels_var = test_evaluate(
-                        arg, model, various_test_set[stance_file]
-                    )
+                    (
+                        acc_var,
+                        out_a_var,
+                        labels_var,
+                        corresponding_text_file_label_predict_var,
+                    ) = test_evaluate(arg, model, various_test_set[stance_file])
                     evaluation_various[stance_file] = update_evaluation(
                         evaluation=evaluation_various[stance_file],
                         e=e,
@@ -409,7 +449,7 @@ def go(arg):
                         acc=acc_var,
                         out_a=out_a_var,
                         labels=labels_var,
-                        corresponding_text_file_label_predict=corresponding_text_file_label_predict,
+                        corresponding_text_file_label_predict=corresponding_text_file_label_predict_var,
                     )
             evaluation = update_evaluation(
                 evaluation=evaluation,
