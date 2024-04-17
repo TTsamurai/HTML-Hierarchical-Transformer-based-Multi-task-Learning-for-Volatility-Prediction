@@ -26,19 +26,20 @@ def set_seed(seed):
 
 FILE_TYPES = [
     "TextSequence",
-    "ECT",
-    "gpt_summary",
-    "gpt_summary_overweight",
-    "gpt_summary_underweight",
-    "gpt_analysis_overweight",
-    "gpt_analysis_underweight",
-    "gpt_promotion_overweight",
-    "gpt_promotion_underweight",
+    # "ECT",
+    # "gpt_summary",
+    # "gpt_summary_overweight",
+    # "gpt_summary_underweight",
+    # "gpt_analysis_overweight",
+    # "gpt_analysis_underweight",
+    # "gpt_promotion_overweight",
+    # "gpt_promotion_underweight",
     "analysis_underweight_and_overweight",
     "summary_underweight_and_overweight",
     "analysis_and_summary_underweight_and_overweight",
 ]
 GPT_FILE_TYPES = [
+    "ECT",
     "gpt_summary",
     "gpt_summary_overweight",
     "gpt_summary_underweight",
@@ -68,6 +69,7 @@ if __name__ == "__main__":
     args = parser.parse_known_args()[0]
     # Convert args to a mutable EasyDict
     args = easydict.EasyDict(vars(args))
+    # for train_normal_test_various in [False, True]:
     for train_normal_test_various in [False, True]:
         for file_type in FILE_TYPES:
             # testデータだけ変更するとき
@@ -81,6 +83,7 @@ if __name__ == "__main__":
                         "seed": [],
                         "prediction": [],
                         "actual": [],
+                        "text file predict label": [],
                     }
                     various_best_alpha = {
                         other_file: {
@@ -88,15 +91,16 @@ if __name__ == "__main__":
                             "seed": [],
                             "prediction": [],
                             "actual": [],
+                            "text file predict label": [],
                         }
                         for other_file in GPT_FILE_TYPES
                     }
-                    for seed in range(10):
+                    for seed in range(2):
                         args.update(
                             {
                                 "num_epochs": 5,
                                 "batch_size": 16,
-                                "lr": 2e-5,
+                                "lr": 1e-4,
                                 "tb_dir": "./runs",
                                 "final": False,
                                 "max_pool": False,
@@ -133,6 +137,9 @@ if __name__ == "__main__":
                         best_alpha["seed"].append(seed)
                         best_alpha["prediction"].append(evaluation["Outputs"].iloc[0])
                         best_alpha["actual"].append(evaluation["Actual"].iloc[0])
+                        best_alpha["text file predict label"].append(
+                            evaluation["Text File Predict Label"].iloc[0]
+                        )
 
                         if args.train_normal_test_various:
                             for other_file, evaluation in evaluation_various.items():
@@ -146,7 +153,9 @@ if __name__ == "__main__":
                                 various_best_alpha[other_file]["actual"].append(
                                     evaluation["Actual"].iloc[0]
                                 )
-
+                                various_best_alpha[other_file][
+                                    "text file predict label"
+                                ].append(evaluation["Text File Predict Label"].iloc[0])
                     best_alpha = pd.DataFrame(best_alpha)
                     best_alpha.sort_values(["best"], ascending=True, inplace=True)
                     if not args.train_normal_test_various:

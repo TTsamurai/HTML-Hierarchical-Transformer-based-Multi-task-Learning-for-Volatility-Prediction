@@ -56,10 +56,20 @@ def stack_text_embeddings(text_emb_dict, text_file_list):
     return np.stack([text_emb_dict[i] for i in text_file_list])
 
 
+def get_text_path_label_prediction(text_file, labels, preds):
+    return pd.DataFrame(
+        {
+            "text_file_name": text_file,
+            "label": labels,
+            "prediction": preds,
+        }
+    )
+
+
 def test_evaluate(arg, model, testloader):
     loss_test = 0.0
     for i, data in enumerate(testloader):
-        inputs, labels = data
+        inputs, labels, text_file = data
         inputs, labels = (
             torch.tensor(inputs, dtype=torch.float32),
             torch.tensor(labels, dtype=torch.float32).cuda(),
@@ -81,24 +91,37 @@ def test_evaluate(arg, model, testloader):
 
         loss = loss_function(out_a, labels)
         loss_test += loss
+        corresponding_text_file_label_predict = get_text_path_label_prediction(
+            text_file, labels.cpu().detach().numpy(), out_a.cpu().detach().numpy()
+        )
     acc = loss_test
-    return acc, out_a, labels
+    return acc, out_a, labels, corresponding_text_file_label_predict
 
 
-def update_evaluation(evaluation, e, train_loss_tol, acc, out_a, labels):
+def update_evaluation(
+    evaluation,
+    e,
+    train_loss_tol,
+    acc,
+    out_a,
+    labels,
+    corresponding_text_file_label_predict,
+):
     evaluation["epoch"].append(e)
     evaluation["Train Loss"].append(train_loss_tol.item())
     evaluation["Test Loss"].append(acc.item())
     evaluation["Outputs"].append(out_a.cpu().detach().numpy().tolist())
     evaluation["Actual"].append(labels.cpu().detach().numpy().tolist())
+    evaluation["Text File Predict Label"].append(corresponding_text_file_label_predict)
     return evaluation
 
 
 class Dataset_single_task(VanillaDataset):
-    def __init__(self, texts, labels):
+    def __init__(self, texts, labels, text_file):
         "Initialization"
         self.labels = labels
         self.text = texts
+        self.text_file = text_file
 
     def __len__(self):
         "Denotes the total number of samples"
@@ -113,7 +136,8 @@ class Dataset_single_task(VanillaDataset):
         # Load data and get label
         X = self.text[index, :, :]
         y = self.labels[index]
-        return X, y
+        text_file = self.text_file[index]
+        return X, y, text_file
 
 
 def go(arg):
@@ -127,7 +151,6 @@ def go(arg):
     # Text Embeddings Load
     text_file_path = arg.data_dir + arg.input_dir
     TEXT_emb_dict = get_text_embeddings_dict(text_file_path)
-
     # Price Data Load
     price_data_path = arg.data_dir + arg.price_data_dir
 
@@ -186,12 +209,12 @@ def go(arg):
         merged_data = pd.merge(
             vol_single_df, price_df, on="text_file_name", how="inner"
         )
-        LABEL_emb = price_df[f"future_{arg.duration}"].values
+        LABEL_emb = merged_data[f"future_{arg.duration}"].values
     elif arg.task == "stock_movement_prediction":
         merged_data = pd.merge(
             vol_single_df, price_df, on="text_file_name", how="inner"
         )
-        LABEL_emb = price_df[f"future_label_{arg.duration}"].values
+        LABEL_emb = merged_data[f"future_label_{arg.duration}"].values
     elif arg.task == "volatility_prediction":
         merged_data = pd.merge(
             vol_single_df, vol_average_df, on="text_file_name", how="inner"
@@ -201,12 +224,13 @@ def go(arg):
         merged_data = pd.merge(
             vol_single_df, price_df, on="text_file_name", how="inner"
         )
-        LABEL_emb = price_df[f"stock_return_{arg.duration}"].values
+        LABEL_emb = merged_data[f"stock_return_{arg.duration}"].values
     else:
         raise ValueError("task is not well defined")
     merged_text_file_list = merged_data["text_file_name"].tolist()
     TEXT_emb = stack_text_embeddings(TEXT_emb_dict, merged_text_file_list)
     print(" Finish Loading Data... ")
+
     if arg.final:
         train, test = train_test_split(TEXT_emb, test_size=0.2, random_state=SEED_SPLIT)
         train_label, test_label = train_test_split(
@@ -227,11 +251,18 @@ def go(arg):
             data_label, test_size=0.125, random_state=SEED_SPLIT
         )
 
+        text_file_train, _ = train_test_split(
+            merged_text_file_list, test_size=0.2, random_state=SEED_SPLIT
+        )
+        text_file_train_label, text_file_val_label = train_test_split(
+            text_file_train, test_size=0.125, random_state=SEED_SPLIT
+        )
+
         # data_label_b, _ = train_test_split(LABEL_emb_b, test_size=0.2)
         # train_label_b, val_label_b = train_test_split(data_label_b, test_size=0.125)
 
-        training_set = Dataset_single_task(train, train_label)
-        val_set = Dataset_single_task(val, val_label)
+        training_set = Dataset_single_task(train, train_label, text_file_train_label)
+        val_set = Dataset_single_task(val, val_label, text_file_val_label)
 
     if arg.train_normal_test_various:
         assert arg.file_name == "TextSequence", "TextSequence only"
@@ -249,7 +280,8 @@ def go(arg):
             train, val = train_test_split(
                 data, test_size=0.125, random_state=SEED_SPLIT
             )
-            various_dataset = Dataset_single_task(val, val_label)
+
+            various_dataset = Dataset_single_task(val, val_label, text_file_val_label)
             various_dataloader = torch.utils.data.DataLoader(
                 various_dataset,
                 batch_size=len(various_dataset),
@@ -297,6 +329,7 @@ def go(arg):
         "Test Loss": [],
         "Outputs": [],
         "Actual": [],
+        "Text File Predict Label": [],
     }
     evaluation_various = {
         stance_file: {
@@ -305,6 +338,7 @@ def go(arg):
             "Test Loss": [],
             "Outputs": [],
             "Actual": [],
+            "Text File Predict Label": [],
         }
         for stance_file in GPT_FILE_TYPES
     }
@@ -323,7 +357,7 @@ def go(arg):
 
             opt.zero_grad()
 
-            inputs, labels = data
+            inputs, labels, _ = data
             inputs = Variable(inputs.type(torch.FloatTensor))
             labels = torch.tensor(labels, dtype=torch.float32).cuda()
 
@@ -360,7 +394,9 @@ def go(arg):
         with torch.no_grad():
 
             model.train(False)
-            acc, out_a, labels = test_evaluate(arg, model, testloader)
+            acc, out_a, labels, corresponding_text_file_label_predict = test_evaluate(
+                arg, model, testloader
+            )
             if arg.train_normal_test_various:
                 for stance_file in GPT_FILE_TYPES:
                     acc_var, out_a_var, labels_var = test_evaluate(
@@ -373,6 +409,7 @@ def go(arg):
                         acc=acc_var,
                         out_a=out_a_var,
                         labels=labels_var,
+                        corresponding_text_file_label_predict=corresponding_text_file_label_predict,
                     )
             evaluation = update_evaluation(
                 evaluation=evaluation,
@@ -381,6 +418,7 @@ def go(arg):
                 acc=acc,
                 out_a=out_a,
                 labels=labels,
+                corresponding_text_file_label_predict=corresponding_text_file_label_predict,
             )
     evaluation = pd.DataFrame(evaluation)
     evaluation.sort_values(["Test Loss"], ascending=True, inplace=True)
