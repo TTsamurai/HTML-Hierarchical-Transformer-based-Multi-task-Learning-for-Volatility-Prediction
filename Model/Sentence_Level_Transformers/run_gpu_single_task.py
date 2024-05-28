@@ -31,20 +31,12 @@ import pandas as pd
 import numpy as np
 from sklearn.metrics import mean_squared_error
 import random, tqdm, sys, math, gzip
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+
+sys.path.append("../Experiments")
+from single_task_prediction import GPT_FILE_TYPES
 
 SEED_SPLIT = 42
-GPT_FILE_TYPES = [
-    "gpt_summary",
-    "gpt_summary_overweight",
-    "gpt_summary_underweight",
-    "gpt_analysis_overweight",
-    "gpt_analysis_underweight",
-    "gpt_promotion_overweight",
-    "gpt_promotion_underweight",
-    "analysis_underweight_and_overweight",
-    "summary_underweight_and_overweight",
-    "analysis_and_summary_underweight_and_overweight",
-]
 
 VOL_SINGLE_PATH = [
     "train_split_SeriesSingleDayVol3.csv",
@@ -73,13 +65,10 @@ def stack_text_embeddings(text_emb_dict, text_file_list):
 
 
 def get_text_path_label_prediction(text_file, labels, preds):
-    return pd.DataFrame(
-        {
-            "text_file_name": text_file,
-            "label": labels,
-            "prediction": preds,
-        }
-    )
+    return {
+        text_file[i]: {"label": labels[i], "pred": preds[i]}
+        for i in range(len(text_file))
+    }
 
 
 def load_and_concatenate_csv(file_names, base_path):
@@ -136,6 +125,108 @@ def main_splitting(TEXT_emb, LABEL_emb, merged_text_file_list, SEED_SPLIT):
         (val_features, val_labels, val_file_list),
         (test_features, test_labels, test_file_list),
     )
+
+
+def get_acl_dataloader(
+    arg, stance_file, merged_text_file_list, LABEL_emb, text_file_val_label
+):
+    stance_input_dir = f"./ptm_embeddings/{arg.embeddings_type}/{stance_file}.npz"
+    text_file_path = arg.data_dir + stance_input_dir
+    TEXT_emb_dict = get_text_embeddings_dict(text_file_path)
+    TEXT_emb_var = stack_text_embeddings(TEXT_emb_dict, merged_text_file_list)
+
+    _, val_data_var, _ = main_splitting(
+        TEXT_emb_var, LABEL_emb, merged_text_file_list, SEED_SPLIT
+    )
+    val_var, val_label_var, text_file_val_label_var = val_data_var
+    assert text_file_val_label == text_file_val_label_var, "Text File Mismatch"
+    various_dataset = Dataset_single_task(
+        val_var, val_label_var, text_file_val_label_var
+    )
+    various_dataloader = torch.utils.data.DataLoader(
+        various_dataset,
+        batch_size=len(various_dataset),
+        shuffle=False,
+        num_workers=2,
+    )
+    return various_dataloader
+
+
+def get_ectsum_dataloader(arg, stance_file):
+    # text_emb, label_emb, text_file_listを出す
+    stance_input_dir = f"ptm_embeddings/{arg.embeddings_type}/ectsum_{stance_file}.npz"
+    text_file_path = os.path.join(arg.data_dir, stance_input_dir)
+    TEXT_emb_dict = get_text_embeddings_dict(text_file_path)
+    price_data_path = os.path.join(arg.data_dir, "price_data_ectsum")
+    vol_single_df = pd.read_csv(
+        os.path.join(price_data_path, "ectsum_SeriesSingleDayVol3.csv")
+    )
+    vol_average_df = pd.read_csv(
+        os.path.join(price_data_path, "ectsum_Avg_Series_WITH_LOG.csv")
+    )
+    price_df = pd.read_csv(os.path.join(price_data_path, "ectsum_price_label.csv"))
+    # Filter and select only necessary columns
+    text_file_list = list(TEXT_emb_dict.keys())
+    vol_single_df = vol_single_df[vol_single_df["text_file_name"].isin(text_file_list)]
+    vol_average_df = vol_average_df[
+        vol_average_df["text_file_name"].isin(text_file_list)
+    ]
+    price_df = price_df[price_df["text_file_name"].isin(text_file_list)][
+        [
+            "text_file_name",
+            f"future_{arg.duration}",
+            f"future_label{arg.duration}",
+            "current_adjclose_price",
+        ]
+    ]
+    vol_single_df = vol_single_df[["text_file_name", f"future_Single_{arg.duration}"]]
+
+    vol_average_df = vol_average_df[["text_file_name", f"future_Single_{arg.duration}"]]
+    price_df = calculate_stock_return(price_df, arg.duration)
+    # Merging Text embeddigns and price data
+    # タスクによりデータを変更する
+    if arg.task == "stock_price_prediction":
+        merged_data = pd.merge(
+            vol_single_df, price_df, on="text_file_name", how="inner"
+        )
+        LABEL_emb = merged_data[f"future_{arg.duration}"].values
+    elif arg.task == "stock_movement_prediction":
+        merged_data = pd.merge(
+            vol_single_df, price_df, on="text_file_name", how="inner"
+        )
+        LABEL_emb = merged_data[f"future_label{arg.duration}"].values
+    elif arg.task == "volatility_prediction":
+        merged_data = pd.merge(
+            vol_single_df, vol_average_df, on="text_file_name", how="inner"
+        )
+
+        LABEL_emb = merged_data[f"future_Single_{arg.duration}_x"].values
+    elif arg.task == "stock_return_prediction":
+        merged_data = pd.merge(
+            vol_single_df, price_df, on="text_file_name", how="inner"
+        )
+        LABEL_emb = merged_data[f"stock_return_{arg.duration}"].values
+    else:
+        raise ValueError("task is not well defined")
+    merged_text_file_list = merged_data["text_file_name"].tolist()
+    TEXT_emb = stack_text_embeddings(TEXT_emb_dict, merged_text_file_list)
+    various_dataset = Dataset_single_task(TEXT_emb, LABEL_emb, merged_text_file_list)
+    various_dataloader = torch.utils.data.DataLoader(
+        various_dataset,
+        batch_size=len(various_dataset),
+        shuffle=False,
+        num_workers=2,
+    )
+
+    # if majority_vote > 0.5:
+    #     result_array = np.ones_like(LABEL_emb)
+    # else:
+    #     result_array = np.zeros_like(LABEL_emb)
+    # print(f"accuracy of majority vote: {accuracy_score(LABEL_emb, result_array)}")
+    # print(f"precision of majority vote: {precision_score(LABEL_emb, result_array)}")
+    # print(f"recall of majority vote: {recall_score(LABEL_emb, result_array)}")
+
+    return various_dataloader
 
 
 def test_evaluate(arg, model, testloader):
@@ -212,6 +303,35 @@ class Dataset_single_task(VanillaDataset):
         return X, y, text_file
 
 
+def calculate_log_volatility(row, start, end):
+    # Extract the current adjusted close price
+    current_price = row["current_adjclose_price"]
+
+    # Collect future prices into a list
+    future_prices = [current_price] + [
+        row[f"future_{i}"] for i in range(start, end + 1) if f"future_{i}" in row
+    ]
+
+    # Calculate logarithmic returns from the current price to each future price
+    returns = np.array(
+        [
+            (future_prices[i + 1] / future_prices[i]) - 1
+            for i in range(len(future_prices) - 1)
+        ]
+    )
+
+    # Calculate the mean of logarithmic returns
+    mean_return = np.mean(returns)
+
+    # Calculate the standard deviation of returns normalized by their mean
+    delta = len(returns)
+    volatility = np.sqrt(np.sum((returns - mean_return) ** 2) / delta)
+
+    # Return the natural logarithm of the calculated volatility
+    log_volatility = np.log(volatility)
+    return log_volatility
+
+
 def go(arg):
     """
     Creates and trains a basic transformer for the volatility regression task.
@@ -221,11 +341,11 @@ def go(arg):
 
     print(" Loading Data ...")
     # Text Embeddings Load
+    # input_dirはECTかGpt_summary
     text_file_path = os.path.join(arg.data_dir, arg.input_dir)
     TEXT_emb_dict = get_text_embeddings_dict(text_file_path)
     # Price Data Load
     price_data_path = os.path.join(arg.data_dir, arg.price_data_dir)
-
     # Load and concatenate CSV files
     vol_single_df = load_and_concatenate_csv(VOL_SINGLE_PATH, price_data_path)
     vol_average_df = load_and_concatenate_csv(VOL_AVERAGE_PATH, price_data_path)
@@ -279,7 +399,6 @@ def go(arg):
     merged_text_file_list = merged_data["text_file_name"].tolist()
     TEXT_emb = stack_text_embeddings(TEXT_emb_dict, merged_text_file_list)
     print(" Finish Loading Data... ")
-
     if arg.final:
         train, test = train_test_split(TEXT_emb, test_size=0.2, random_state=SEED_SPLIT)
         train_label, test_label = train_test_split(
@@ -294,37 +413,49 @@ def go(arg):
             TEXT_emb, LABEL_emb, merged_text_file_list, SEED_SPLIT
         )
         train, train_label, text_file_train_label = train_data
+        # val: np.ndarray, (56, 520, 768)
+        # val_label: np.ndarray, (56,)
+        # text_file_val_label: list, (56,)
         val, val_label, text_file_val_label = val_data
 
+        # majorityの実装
+        majority_vote = np.mean(train_label)
+        print(f"majority vote: {majority_vote}")
+        # if majority_vote > 0.5:
+        #     result_array = np.ones_like(val_label)
+        # else:
+        #     result_array = np.zeros_like(val_label)
+        # print(f"accuracy of majority vote: {accuracy_score(val_label, result_array)}")
+        # print(f"precision of majority vote: {precision_score(val_label, result_array)}")
+        # print(f"recall of majority vote: {recall_score(val_label, result_array)}")
+        # import ipdb
+
+        # ipdb.set_trace()
         training_set = Dataset_single_task(train, train_label, text_file_train_label)
         val_set = Dataset_single_task(val, val_label, text_file_val_label)
 
     if arg.train_normal_test_various:
-        assert arg.file_name == "TextSequence", "TextSequence only"
+        assert arg.file_name in [
+            "TextSequence",
+            "ECT",
+            "gpt4_summary",
+        ], "TextSequence only"
         assert arg.final == False, "Not Final"
         various_test_set = {}
         for stance_file in GPT_FILE_TYPES:
-            stance_input_dir = (
-                f"./ptm_embeddings/{arg.embeddings_type}/{stance_file}.npz"
-            )
-            text_file_path = arg.data_dir + stance_input_dir
-            TEXT_emb_dict = get_text_embeddings_dict(text_file_path)
-            TEXT_emb_var = stack_text_embeddings(TEXT_emb_dict, merged_text_file_list)
-
-            _, val_data_var, _ = main_splitting(
-                TEXT_emb_var, LABEL_emb, merged_text_file_list, SEED_SPLIT
-            )
-            val_var, val_label_var, text_file_val_label_var = val_data_var
-            assert text_file_val_label == text_file_val_label_var, "Text File Mismatch"
-            various_dataset = Dataset_single_task(
-                val_var, val_label_var, text_file_val_label_var
-            )
-            various_dataloader = torch.utils.data.DataLoader(
-                various_dataset,
-                batch_size=len(various_dataset),
-                shuffle=False,
-                num_workers=2,
-            )
+            if arg.test_type == "acl19":
+                various_dataloader = get_acl_dataloader(
+                    arg,
+                    stance_file,
+                    merged_text_file_list,
+                    LABEL_emb,
+                    text_file_val_label,
+                )
+            elif arg.test_type == "ectsum":
+                # ECTSUM用のvarious dataloader，textembとlabelemb両方新しいのにする
+                various_dataloader = get_ectsum_dataloader(arg, stance_file)
+            else:
+                raise ValueError("test_type is not well defined")
             various_test_set[stance_file] = various_dataloader
 
     trainloader = torch.utils.data.DataLoader(

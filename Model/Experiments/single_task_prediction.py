@@ -25,34 +25,66 @@ def set_seed(seed):
 
 
 FILE_TYPES = [
-    "TextSequence",
+    # "TextSequence",
     "ECT",
-    "gpt_summary",
-    "gpt_summary_overweight",
-    "gpt_summary_underweight",
-    "gpt_analysis_overweight",
-    "gpt_analysis_underweight",
-    "gpt_promotion_overweight",
-    "gpt_promotion_underweight",
-    "analysis_underweight_and_overweight",
-    "summary_underweight_and_overweight",
-    "analysis_and_summary_underweight_and_overweight",
+    # "gpt_summary",
+    # "gpt_summary_overweight",
+    # "gpt_summary_underweight",
+    # "gpt_analysis_overweight",
+    # "gpt_analysis_underweight",
+    # "gpt_promotion_overweight",
+    # "gpt_promotion_underweight",
+    "gpt4_summary",
+    # "gpt4_summary_overweight",
+    # "gpt4_summary_underweight",
+    # "gpt4_analysis_overweight",
+    # "gpt4_analysis_underweight",
+    # "gpt4_promotion_overweight",
+    # "gpt4_promotion_underweight",
+    # "analysis_underweight_and_overweight",
+    # "summary_underweight_and_overweight",
+    # "analysis_and_summary_underweight_and_overweight",
 ]
-GPT_FILE_TYPES = [
-    "ECT",
-    "gpt_summary",
-    "gpt_summary_overweight",
-    "gpt_summary_underweight",
-    "gpt_analysis_overweight",
-    "gpt_analysis_underweight",
-    "gpt_promotion_overweight",
-    "gpt_promotion_underweight",
-    "analysis_underweight_and_overweight",
-    "summary_underweight_and_overweight",
-    "analysis_and_summary_underweight_and_overweight",
-]
+# GPT_FILE_TYPES = [
+#     # "ECT", # Test typeがacl19ならこちら
+#     # "gpt_summary",
+#     # "gpt_summary_overweight",
+#     # "gpt_summary_underweight",
+#     # "gpt_analysis_overweight",
+#     # "gpt_analysis_underweight",
+#     # "gpt_promotion_overweight",
+#     # "gpt_promotion_underweight",
+#     # "gpt4_summary",
+#     # "gpt4_summary_overweight",
+#     # "gpt4_summary_underweight",
+#     # "gpt4_analysis_overweight",
+#     # "gpt4_analysis_underweight",
+#     # "gpt4_promotion_overweight",
+#     # "gpt4_promotion_underweight",
+#     "gt_summary_bullet",
+#     "gpt4_summary",
+#     "gpt4_summary_overweight",
+#     "gpt4_summary_underweight",
+#     # "gpt4_analysis_overweight",
+#     # "gpt4_analysis_underweight",
+#     "gpt4_promotion_overweight",
+#     "gpt4_promotion_underweight",
+#     # "analysis_underweight_and_overweight",
+#     # "summary_underweight_and_overweight",
+#     # "analysis_and_summary_underweight_and_overweight",
+# ]
+GPT_FILE_TYPES = ["analyst_report"]
 DURATIONS = [3, 7, 15, 30]
-EMBEDDINGS_TYPE = ["bert-base-uncased", "roberta-base", "ProsusAI/finbert"]
+# DURATIONS = [3]
+# EMBEDDINGS_TYPE = ["bert-base-uncased", "roberta-base", "ProsusAI/finbert"]
+EMBEDDINGS_TYPE = [
+    "bert-base-uncased",
+    "roberta-base",
+    "ProsusAI/finbert",
+    "finbert-tone",
+    "finbert-pretrain",
+]
+TEST_TYPE = ["ectsum", "acl19"]
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument(
@@ -70,11 +102,12 @@ if __name__ == "__main__":
     # Convert args to a mutable EasyDict
     args = easydict.EasyDict(vars(args))
     # for train_normal_test_various in [False, True]:
-    for train_normal_test_various in [True, False]:
+    test_type = TEST_TYPE[0]
+    for train_normal_test_various in [True]:
         for file_type in FILE_TYPES:
             # testデータだけ変更するとき
             if train_normal_test_various:
-                if file_type != "TextSequence":
+                if file_type not in ["TextSequence", "ECT", "gpt4_summary"]:
                     continue
             for embeddings_type in EMBEDDINGS_TYPE:
                 for dur in DURATIONS:
@@ -95,12 +128,13 @@ if __name__ == "__main__":
                         }
                         for other_file in GPT_FILE_TYPES
                     }
+                    # for seed in range(10):
                     for seed in range(10):
                         args.update(
                             {
-                                "num_epochs": 5,
+                                "num_epochs": 20,  # 元々は5
                                 "batch_size": 16,
-                                "lr": 1e-4,
+                                "lr": 1e-5,  # 元々は 1e-4
                                 "tb_dir": "./runs",
                                 "final": False,
                                 "max_pool": False,
@@ -120,9 +154,11 @@ if __name__ == "__main__":
                                 "gpu": True,
                                 "save": False,
                                 "duration": dur,
+                                # "duration": 30,
                                 "vocab_size": None,
                                 "cuda_id": "0",
                                 "train_normal_test_various": train_normal_test_various,
+                                "test_type": test_type,
                             }
                         )
                         if args.train_normal_test_various:
@@ -156,6 +192,7 @@ if __name__ == "__main__":
                                 various_best_alpha[other_file][
                                     "text file predict label"
                                 ].append(evaluation["Text File Predict Label"].iloc[0])
+
                     best_alpha = pd.DataFrame(best_alpha)
                     best_alpha.sort_values(["best"], ascending=True, inplace=True)
                     if not args.train_normal_test_various:
@@ -164,7 +201,11 @@ if __name__ == "__main__":
                             os.makedirs(save_dir)
                         best_alpha.to_csv(save_dir + f"result.csv")
                     else:
-                        save_dir = f"./results/train_normal_test_various/{args.task}/{args.file_name}/{args.file_name}/{args.duration}/{args.embeddings_type}/"
+                        save_dir_base = f"./results/{test_type}/train_normal_test_various_lr_{str(args.lr)}/"
+                        save_dir = os.path.join(
+                            save_dir_base
+                            + f"{args.task}/{args.file_name}/{args.file_name}/{args.duration}/{args.embeddings_type}/"
+                        )
                         if not os.path.exists(save_dir):
                             os.makedirs(save_dir)
                         best_alpha.to_csv(save_dir + f"result.csv")
@@ -172,7 +213,10 @@ if __name__ == "__main__":
                             other_file_type,
                             various_alpha,
                         ) in various_best_alpha.items():
-                            save_dir = f"./results/train_normal_test_various/{args.task}/{args.file_name}/{other_file_type}/{args.duration}/{args.embeddings_type}/"
+                            save_dir = os.path.join(
+                                save_dir_base,
+                                f"{args.task}/{args.file_name}/{other_file_type}/{args.duration}/{args.embeddings_type}/",
+                            )
                             best_alpha = pd.DataFrame(various_alpha)
                             best_alpha.sort_values(
                                 ["best"], ascending=True, inplace=True
